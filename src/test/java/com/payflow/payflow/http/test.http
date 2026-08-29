@@ -1,0 +1,18 @@
+### 사용자 생성
+POST http://localhost:8080/api/users
+Content-Type: application/json
+
+{
+  "name": "홍길동"
+}
+
+### 사용자 생성 2
+POST http://localhost:8080/api/users
+Content-Type: application/json
+
+{
+  "name": "김철수"
+}
+
+### 전체 조회
+GET http://localhost:8080/api/users
