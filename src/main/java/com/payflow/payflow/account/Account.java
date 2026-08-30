@@ -49,4 +49,14 @@ public class Account {
         }
         this.balance+=amount;
     }
+
+    public void withdraw(Long amount){
+        if(amount<=0){
+            throw new IllegalArgumentException("출금금액은 0보다 커야합니다.");
+        }
+        if(balance<amount){
+            throw new IllegalArgumentException("잔액이 부족합니다.");
+        }
+        this.balance-=amount;
+    }
 }

@@ -1,5 +1,6 @@
 package com.payflow.payflow.account;
 
+import com.payflow.payflow.transfer.dto.AccountResponse;
 import com.payflow.payflow.user.User;
 import com.payflow.payflow.user.UserRepository;
 import jakarta.transaction.Transactional;
@@ -28,8 +29,17 @@ public class AccountService {
 
         return accountRepository.save(account);
     }
-    public List<Account> getAccounts(){
-        return accountRepository.findAll();
+    public List<AccountResponse> getAccounts(){
+        return accountRepository.findAll()
+                .stream()
+                .map(account -> new AccountResponse(
+                        account.getId(),
+                        account.getAccountNumber(),
+                        account.getBalance(),
+                        account.getUser().getId(),
+                        account.getUser().getName()
+                ))
+                .toList();
     }
 
     @Transactional //dirty checking

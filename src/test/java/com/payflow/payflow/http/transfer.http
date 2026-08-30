@@ -1,0 +1,43 @@
+### 정상 송금
+POST http://localhost:8080/api/transfers
+Content-Type: application/json
+
+{
+  "fromAccountId": 1,
+  "toAccountId": 2,
+  "amount": 3000
+}
+
+### 같은 계좌로 송금
+POST http://localhost:8080/api/transfers
+Content-Type: application/json
+
+{
+  "fromAccountId": 1,
+  "toAccountId": 1,
+  "amount": 3000
+}
+
+### 잔액보다 많이 송금
+POST http://localhost:8080/api/transfers
+Content-Type: application/json
+
+{
+  "fromAccountId": 1,
+  "toAccountId": 2,
+  "amount": 99999999
+}
+
+### 존재하지 않는 계좌
+POST http://localhost:8080/api/transfers
+Content-Type: application/json
+
+{
+  "fromAccountId": 999,
+  "toAccountId": 2,
+  "amount": 3000
+}
+
+#### 계좌 조회
+GET http://localhost:8080/api/accounts
+

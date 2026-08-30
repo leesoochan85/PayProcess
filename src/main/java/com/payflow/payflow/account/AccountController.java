@@ -1,5 +1,6 @@
 package com.payflow.payflow.account;
 
+import com.payflow.payflow.transfer.dto.AccountResponse;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -18,14 +19,14 @@ public class AccountController {
         return accountService.createAccount(request.userId());
     }
     @GetMapping
-    public List<Account> getAccount(){
+    public List<AccountResponse> getAccount(){
         return accountService.getAccounts();
     }
     public record CreateAccountRequest(Long userId){
 
     }
 
-    @PostMapping("/{account}/deposit")
+    @PostMapping("/{accountId}/deposit")
     public Account deposit(@PathVariable Long accountId, @RequestBody DepositRequest request){
         return accountService.deposit(accountId, request.amount());
     }

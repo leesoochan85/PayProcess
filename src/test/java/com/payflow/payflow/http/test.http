@@ -7,10 +7,16 @@ Content-Type: application/json
 }
 
 
-#### 전체 조회
-#GET http://localhost:8080/api/users
+### 사용자 생성 2
+POST http://localhost:8080/api/users
+Content-Type: application/json
+
+{
+  "name": "김철수"
+}
 
 
+#### 계좌 생성
 POST http://localhost:8080/api/accounts
 Content-Type: application/json
 
@@ -18,9 +24,25 @@ Content-Type: application/json
   "userId": 1
 }
 
+#### 계좌 생성
+POST http://localhost:8080/api/accounts
+Content-Type: application/json
+
+{
+  "userId": 2
+}
+
+#### 계좌확인
 POST http://localhost:8080/api/accounts/1/deposit
 Content-Type: application/json
 
 {
   "amount": 10000
+}
+#### 계좌확인2
+POST http://localhost:8080/api/accounts/2/deposit
+Content-Type: application/json
+
+{
+"amount": 10000
 }
