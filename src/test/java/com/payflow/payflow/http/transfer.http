@@ -4,8 +4,8 @@ Content-Type: application/json
 
 {
   "fromAccountId": 1,
-  "toAccountId": 2,
-  "amount": 3000
+  "toAccountId": 3,
+  "amount": 1000
 }
 
 ### 같은 계좌로 송금
@@ -40,4 +40,16 @@ Content-Type: application/json
 
 #### 계좌 조회
 GET http://localhost:8080/api/accounts
+
+#### 송금내역 조회
+GET http://localhost:8080/api/transfers
+
+### 1번 계좌가 보낸 내역 조회
+GET http://localhost:8080/api/transfers/sent/1
+
+### 1번 계좌가 받은 내역 조회
+GET http://localhost:8080/api/transfers/received/1
+
+### 1번 계좌 전체 거래내역
+GET http://localhost:8080/api/transfers/accounts/3
 
