@@ -1,7 +1,8 @@
 package com.payflow.payflow.transfer;
 
+import com.payflow.payflow.transfer.dto.AccountTransferResponse;
 import com.payflow.payflow.transfer.dto.TransferRequest;
-import com.payflow.payflow.transfer.dto.TransferResponse;
+import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -16,9 +17,9 @@ public class TransferController {
     }
 
     @PostMapping
-    public String transfer(@RequestBody TransferRequest request) {
+    public String transfer(@Valid @RequestBody TransferRequest request) {
         transferService.transfer(request.fromAccountId(), request.toAccountId(), request.amount());
-        return String.valueOf(new TransferResponse("송금 성공", request.amount()));
+        return "송금 성공";
     }
 
     @GetMapping

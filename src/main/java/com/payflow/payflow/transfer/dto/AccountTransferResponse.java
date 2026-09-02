@@ -1,4 +1,7 @@
-package com.payflow.payflow.transfer;
+package com.payflow.payflow.transfer.dto;
+
+import com.payflow.payflow.transfer.Transfer;
+import com.payflow.payflow.transfer.TransferType;
 
 import java.time.LocalDateTime;
 

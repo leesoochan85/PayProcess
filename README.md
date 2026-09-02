@@ -4,7 +4,7 @@
 
 단순 CRUD 구현에 그치지 않고, 송금·결제 시스템에서 발생할 수 있는 트랜잭션, 동시성, 장애 복구, 비동기 처리 등의 문제를 단계적으로 학습하고 해결하는 것을 목표로 합니다.
 
-현재는 Spring Boot와 JPA를 기반으로 사용자, 계좌, 입금, 계좌 간 송금, 송금 이력 저장 및 거래내역 조회 기능까지 구현하며 JPA의 영속성 컨텍스트와 트랜잭션 동작을 학습하고 있습니다.
+현재는 Spring Boot와 JPA를 기반으로 사용자, 계좌, 입금, 계좌 간 송금, 송금 이력 저장 및 거래내역 조회를 구현했으며, 예외 처리 구조화, Bean Validation, Controller/Service 자동 테스트, 실제 H2 기반 Transaction Rollback 통합 테스트까지 진행했습니다.
 
 ---
 
@@ -29,7 +29,6 @@
 
 * Kafka
 * MySQL 또는 PostgreSQL
-* JUnit 기반 테스트 코드
 * 동시성 제어
 * Docker
 * 비동기 이벤트 처리
@@ -125,14 +124,20 @@ com.payflow.payflow
 │   ├── AccountService.java
 │   └── AccountRepository.java
 │
-└── transfer
-    ├── Transfer.java
-    ├── TransferController.java
-    ├── TransferService.java
-    ├── TransferRepository.java
-    ├── TransferResponse.java
-    ├── AccountTransferResponse.java
-    └── TransferType.java
+├── transfer
+│   ├── Transfer.java
+│   ├── TransferController.java
+│   ├── TransferService.java
+│   ├── TransferRepository.java
+│   ├── TransferResponse.java
+│   ├── AccountTransferResponse.java
+│   └── TransferType.java
+│
+└── exception
+    ├── BusinessException.java
+    ├── ErrorCode.java
+    ├── ErrorResponse.java
+    └── GlobalExceptionHandler.java
 ```
 
 현재 `transfer` 패키지에서는 DB 저장용 Entity와 API 응답용 DTO를 분리하고 있습니다.
@@ -401,20 +406,101 @@ JPA가 관리하고 있는 Entity의 값이 변경되면 트랜잭션 종료 시
 
 # Rollback 테스트
 
-Transaction의 동작을 확인하기 위해 출금 이후 의도적으로 예외를 발생시키는 테스트도 진행했습니다.
+`@Transactional`의 실제 동작을 확인하기 위해 **Spring Boot + JPA + H2 기반 통합 테스트**를 작성했습니다.
 
-출금 코드가 먼저 실행되었더라도 트랜잭션이 정상적으로 완료되지 않으면 전체 작업이 Rollback되어 DB의 잔액은 변경되지 않는 것을 확인했습니다.
+송금 흐름 중 후반부인 거래 이력 저장 단계에서 의도적으로 예외를 발생시키고, 이미 실행된 출금/입금 변경까지 모두 Rollback되는지 검증했습니다.
+
+```text
+출금 계좌: 10,000원
+입금 계좌:  5,000원
+
+3,000원 송금 시작
+   ↓
+출금 계좌: 7,000원
+입금 계좌: 8,000원
+   ↓
+Transfer 이력 저장 중 예외 발생
+   ↓
+ROLLBACK
+   ↓
+출금 계좌: 10,000원
+입금 계좌:  5,000원
+```
+
+테스트에서는 변경된 Entity 객체만 확인하지 않고 DB에서 계좌를 다시 조회하여 실제 저장 상태가 원래 잔액으로 복구되었는지 검증했습니다.
+
+이를 통해 송금의 다음 세 작업이 하나의 원자적인 Transaction으로 처리되는 것을 확인했습니다.
+
+```text
+출금
++
+입금
++
+송금 이력 저장
+```
 
 ---
 
 # 송금 Validation
 
-현재 송금 과정에서 잘못된 요청을 방지하기 위한 기본 검증을 적용했습니다.
+송금 요청 검증은 **API 입력값 검증**과 **비즈니스 규칙 검증**으로 역할을 분리했습니다.
+
+## API 입력값 검증
+
+`TransferRequest`에 Bean Validation을 적용하고 Controller에서 `@Valid`로 검증합니다.
+
+```java
+public record TransferRequest(
+        @NotNull(message = "출금계좌 ID는 필수입니다.")
+        Long fromAccountId,
+
+        @NotNull(message = "입금계좌 ID는 필수입니다.")
+        Long toAccountId,
+
+        @NotNull(message = "송금금액은 필수입니다.")
+        @Positive(message = "송금금액은 0보다 커야합니다.")
+        Long amount
+) {
+}
+```
+
+검증 예시:
+
+```text
+amount = -1000
+→ 400 INVALID_REQUEST
+
+amount 누락
+→ 400 INVALID_REQUEST
+
+fromAccountId 누락
+→ 400 INVALID_REQUEST
+```
+
+## 비즈니스 규칙 검증
+
+요청 형식 자체는 올바르지만 실제 송금 규칙을 위반한 경우 Service / Domain 계층에서 검증합니다.
 
 * 동일 계좌 송금 방지
 * 존재하지 않는 출금 계좌
 * 존재하지 않는 입금 계좌
 * 잔액 부족
+* 0 이하 금액에 대한 Domain 자체 방어
+
+즉 다음과 같이 역할을 분리합니다.
+
+```text
+Controller / Request DTO
+├── null 여부
+├── 양수 여부
+└── 기본 요청 형식
+
+Service / Domain
+├── 계좌 존재 여부
+├── 동일 계좌 송금 여부
+├── 잔액 부족 여부
+└── 도메인 상태 변경 규칙
+```
 
 ---
 
@@ -452,6 +538,66 @@ JSON
 * `AccountTransferResponse` — 특정 계좌 관점의 거래정보를 표현
 
 이를 통해 DB Entity 구조와 외부 API 명세를 분리할 수 있습니다.
+
+---
+
+# 예외 처리 구조
+
+초기에는 `IllegalArgumentException`으로 여러 오류를 처리했지만, 비즈니스 예외가 늘어날수록 오류 종류를 구분하기 어려워지는 문제가 있었습니다.
+
+이를 다음 구조로 리팩토링했습니다.
+
+```text
+BusinessException
+        │
+        ▼
+ErrorCode
+├── ACCOUNT_NOT_FOUND
+├── INSUFFICIENT_BALANCE
+├── SAME_ACCOUNT_TRANSFER
+└── INVALID_AMOUNT
+        │
+        ▼
+GlobalExceptionHandler
+        │
+        ▼
+ErrorResponse
+```
+
+`ErrorCode` enum에 HTTP Status, 오류 코드, 메시지를 함께 정의하여 예외 정보를 한곳에서 관리합니다.
+
+예:
+
+```text
+ACCOUNT_NOT_FOUND
+→ 404
+→ "ACCOUNT_NOT_FOUND"
+→ "계좌가 존재하지 않습니다."
+
+INSUFFICIENT_BALANCE
+→ 400
+→ "INSUFFICIENT_BALANCE"
+→ "잔액이 부족합니다."
+```
+
+비즈니스 로직에서는 다음과 같이 공통 예외를 사용합니다.
+
+```java
+throw new BusinessException(ErrorCode.INSUFFICIENT_BALANCE);
+```
+
+`GlobalExceptionHandler`에서는 `BusinessException`을 받아 `ErrorCode`에 정의된 상태 코드와 메시지를 API 응답으로 변환합니다.
+
+Bean Validation 실패는 `MethodArgumentNotValidException`을 처리하여 다음 형태로 응답합니다.
+
+```json
+{
+  "code": "INVALID_REQUEST",
+  "message": "송금금액은 0보다 커야합니다."
+}
+```
+
+이를 통해 API 입력 오류와 비즈니스 규칙 위반을 분리하고 일관된 ErrorResponse를 제공하도록 구성했습니다.
 
 ---
 
@@ -540,8 +686,12 @@ API는 IntelliJ의 `.http` 파일을 이용하여 테스트하고 있습니다.
 * 존재하지 않는 계좌
 * 동일 계좌 송금
 * HTTP 오류 응답 구조
-* Global Exception Handler 개념
-* Custom Exception 설계 방향
+* `@RestControllerAdvice`
+* `GlobalExceptionHandler`
+* `BusinessException`
+* `ErrorCode` enum
+* `ErrorResponse`
+* 비즈니스 예외 공통 구조 리팩토링
 
 ---
 
@@ -608,6 +758,69 @@ createdAt DESC
 
 ---
 
+---
+
+## Day 8 — Validation과 자동 테스트
+
+### Bean Validation
+
+* `@Valid`
+* `@NotNull`
+* `@Positive`
+* `MethodArgumentNotValidException`
+* API 입력 검증과 비즈니스 검증 역할 분리
+
+### Controller 테스트
+
+`MockMvc`를 이용해 HTTP 요청과 오류 응답을 자동 검증했습니다.
+
+검증 항목:
+
+* 음수 송금 금액 → `400 INVALID_REQUEST`
+* 송금 금액 누락 → `400 INVALID_REQUEST`
+* 출금 계좌 ID 누락 → `400 INVALID_REQUEST`
+* 존재하지 않는 계좌 → `404 ACCOUNT_NOT_FOUND`
+* 동일 계좌 송금 → `400 SAME_ACCOUNT_TRANSFER`
+* 잔액 부족 → `400 INSUFFICIENT_BALANCE`
+
+### Service 단위 테스트
+
+Mockito를 사용해 실제 `TransferService` 비즈니스 로직을 검증했습니다.
+
+* 정상 송금 시 출금/입금 잔액 변경
+* 송금 이력 저장 호출
+* 존재하지 않는 계좌 예외
+* 동일 계좌 송금 예외
+* 잔액 부족 예외
+* 실패한 송금에서 거래 이력이 저장되지 않는지 검증
+
+### Transaction 통합 테스트
+
+`@SpringBootTest`와 실제 H2/JPA 환경에서 송금 후반부에 예외를 발생시켜 Transaction Rollback을 검증했습니다.
+
+```text
+TransferService.transfer()
+        ↓
+Account 조회
+        ↓
+withdraw()
+        ↓
+deposit()
+        ↓
+TransferRepository.save()
+        ↓
+예외 발생
+        ↓
+ROLLBACK
+        ↓
+DB 계좌 잔액 원복 확인
+```
+
+이를 통해 단순 Java 로직뿐 아니라 실제 Spring Transaction 경계에서도 송금 원자성이 유지되는지 확인했습니다.
+
+
+---
+
 # 현재까지 배운 핵심
 
 ### Spring 계층 구조
@@ -648,28 +861,78 @@ API에서 사용하는 데이터와 DB Entity를 분리합니다.
 
 정해진 상태값을 타입으로 제한하여 잘못된 문자열이나 오타를 방지합니다.
 
+### Validation
+
+Bean Validation을 이용해 Controller 진입 단계에서 잘못된 요청값을 차단하고, 비즈니스 규칙은 Service / Domain 계층에서 별도로 검증합니다.
+
+### Exception Handling
+
+`BusinessException + ErrorCode + GlobalExceptionHandler` 구조를 통해 API 오류 응답을 일관되게 관리합니다.
+
+### Test
+
+Controller, Service, Transaction 계층을 나누어 자동 테스트를 작성했습니다.
+
+```text
+Controller Test
+→ HTTP / Validation / ErrorResponse
+
+Service Test
+→ 송금 비즈니스 로직
+
+Transaction Integration Test
+→ JPA / H2 / Rollback
+```
+
 ---
 
 # 앞으로 구현할 기능
 
-## 1. DTO 구조 확장
+## 1. 동시성 문제 재현 및 제어
 
-현재 송금 영역에는 `TransferResponse`, `AccountTransferResponse`를 적용했습니다.
+다음 단계에서는 같은 계좌에서 동시에 여러 송금 요청이 들어오는 상황을 테스트합니다.
 
-향후 다음 DTO까지 일관되게 확장할 예정입니다.
+```text
+잔액: 10,000원
+
+요청 A: 8,000원 송금
+요청 B: 8,000원 송금
+```
+
+락이 없다면 두 요청이 동시에 같은 잔액을 조회하여 모두 송금 가능하다고 판단하는 동시성 문제가 발생할 수 있습니다.
+
+진행 예정:
+
+* `ExecutorService`
+* `CountDownLatch`
+* 동시 송금 테스트
+* Lost Update / 잔액 정합성 문제 재현
+* Pessimistic Lock
+* Optimistic Lock
+* `@Version`
+* 락 방식별 장단점 비교
+
+## 2. 테스트 코드 확장
+
+현재 Controller / Service / Transaction Rollback 테스트를 작성했습니다.
+
+향후 다음 테스트를 추가할 예정입니다.
+
+* Repository 테스트
+* 동시성 테스트
+* 성공/실패 Transaction 통합 테스트 확대
+* 예외 응답 케이스 확대
+
+## 3. DTO 구조 확장
+
+현재 송금 영역에는 Request/Response DTO와 ErrorResponse 구조를 적용했습니다.
+
+향후 다음 영역까지 일관되게 확장할 예정입니다.
 
 * AccountResponse
 * UserResponse
-* ErrorResponse
 
-## 2. 예외 처리 구조화
-
-* `@RestControllerAdvice`
-* Custom Exception
-* ErrorCode
-* 일관된 ErrorResponse
-
-## 3. 송금 이력 고도화
+## 4. 송금 이력 고도화
 
 기본 거래 이력 저장 및 조회는 구현했습니다.
 
@@ -681,33 +944,9 @@ API에서 사용하는 데이터와 DB Entity를 분리합니다.
 * 거래 상세 조회
 * 필요 시 Entity 연관관계 적용 여부 검토
 
-## 4. 테스트 코드
+## 5. Kafka
 
-* Service 단위 테스트
-* Repository 테스트
-* Controller 테스트
-* Transaction Rollback 테스트
-
-## 5. 동시성 제어
-
-동시에 같은 계좌에서 송금 요청이 들어오는 문제를 다룰 예정입니다.
-
-```text
-잔액: 10,000원
-
-요청 A: 8,000원 출금
-요청 B: 8,000원 출금
-```
-
-학습 예정:
-
-* Optimistic Lock
-* Pessimistic Lock
-* `@Version`
-
-## 6. Kafka
-
-송금 핵심 로직과 직접 관련 없는 후속 작업을 이벤트 기반으로 분리할 예정입니다.
+송금 핵심 Transaction과 직접 관련 없는 후속 작업을 이벤트 기반으로 분리할 예정입니다.
 
 ```text
 송금 성공
@@ -721,6 +960,13 @@ Kafka
    ├── 거래 이력 후속 처리
    └── 기타 비동기 이벤트
 ```
+
+## 6. 운영 환경 확장
+
+* MySQL 또는 PostgreSQL 적용
+* Docker 기반 실행 환경 구성
+* 운영 환경 설정 분리
+* 장애 복구 전략 검토
 
 ---
 

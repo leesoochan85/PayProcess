@@ -2,7 +2,9 @@ package com.payflow.payflow.transfer;
 
 import com.payflow.payflow.account.Account;
 import com.payflow.payflow.account.AccountRepository;
-import com.payflow.payflow.exception.AccountNotFoundException;
+import com.payflow.payflow.exception.BusinessException;
+import com.payflow.payflow.exception.ErrorCode;
+import com.payflow.payflow.transfer.dto.AccountTransferResponse;
 import jakarta.transaction.Transactional;
 import org.springframework.stereotype.Service;
 
@@ -21,13 +23,13 @@ public class TransferService {
     @Transactional
     public void transfer(Long fromAccountId, Long toAccountId, Long amount){
         Account fromAccount = accountRepository.findById(fromAccountId).orElseThrow(() ->
-                new AccountNotFoundException("출금 계좌가 존재하지 않습니다."));
+                new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND));
 
         Account toAccount = accountRepository.findById(toAccountId).orElseThrow(() ->
-                new AccountNotFoundException("입금 계좌가 존재하지 않습니다."));
+                new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND));
 
         if(fromAccountId.equals(toAccountId)){
-            throw new IllegalArgumentException("같은 계좌로는 송금할 수 없습니다.");
+            throw new BusinessException(ErrorCode.SAME_ACCOUNT_TRANSFER);
         }
 
         fromAccount.withdraw(amount);
@@ -36,15 +38,15 @@ public class TransferService {
         Transfer transfer = new Transfer(fromAccountId, toAccountId, amount);
         transferRepository.save(transfer);
     }
-    public List<TransferResponse> findAll(){
-        return transferRepository.findAll().stream().map(TransferResponse::from).toList();
+    public List<com.payflow.payflow.transfer.TransferResponse> findAll(){
+        return transferRepository.findAll().stream().map(com.payflow.payflow.transfer.TransferResponse::from).toList();
     }
 
-    public List<TransferResponse> findSentTransfers(Long accountId){
-        return transferRepository.findByFromAccountId(accountId).stream().map(TransferResponse::from).toList();
+    public List<com.payflow.payflow.transfer.TransferResponse> findSentTransfers(Long accountId){
+        return transferRepository.findByFromAccountId(accountId).stream().map(com.payflow.payflow.transfer.TransferResponse::from).toList();
     }
 
-    public List<TransferResponse>findReceivedTransfers(Long accountId){
+    public List<com.payflow.payflow.transfer.TransferResponse>findReceivedTransfers(Long accountId){
         return transferRepository.findByToAccountId(accountId).stream().map(TransferResponse::from).toList();
     }
 

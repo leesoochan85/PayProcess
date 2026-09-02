@@ -48,14 +48,14 @@ Content-Type: application/json
   "userId": 3
 }
 
-#### 계좌확인1
+#### 잔고설정1
 POST http://localhost:8080/api/accounts/1/deposit
 Content-Type: application/json
 
 {
   "amount": 10000
 }
-#### 계좌확인2
+#### 잔고설정2
 POST http://localhost:8080/api/accounts/2/deposit
 Content-Type: application/json
 
@@ -63,8 +63,8 @@ Content-Type: application/json
 "amount": 10000
 }
 
-#### 계좌확인3
-POST http://localhost:8080/api/accounts/2/deposit
+#### 잔고설정3
+POST http://localhost:8080/api/accounts/3/deposit
 Content-Type: application/json
 
 {
