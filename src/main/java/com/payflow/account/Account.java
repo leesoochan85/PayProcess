@@ -16,6 +16,9 @@ public class Account {
     private String accountNumber;
     private Long balance;
 
+//    @Version
+//    private Long version;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "user_id")
     private User user;

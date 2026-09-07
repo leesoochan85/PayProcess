@@ -4,7 +4,7 @@
 
 단순 CRUD 구현에 그치지 않고, 송금·결제 시스템에서 발생할 수 있는 트랜잭션, 동시성, 장애 복구, 비동기 처리 등의 문제를 단계적으로 학습하고 해결하는 것을 목표로 합니다.
 
-현재는 Spring Boot와 JPA를 기반으로 사용자, 계좌, 입금, 계좌 간 송금, 송금 이력 저장 및 거래내역 조회를 구현했으며, 예외 처리 구조화, Bean Validation, Controller/Service 자동 테스트, 실제 H2 기반 Transaction Rollback 통합 테스트까지 진행했습니다.
+현재는 Spring Boot와 JPA를 기반으로 사용자, 계좌, 입금, 계좌 간 송금, 송금 이력 저장 및 거래내역 조회를 구현했으며, 예외 처리 구조화, Bean Validation, Controller/Service 자동 테스트, 실제 H2 기반 Transaction Rollback 통합 테스트와 **동시 송금 상황의 Lost Update 재현 및 비관적 락(Pessimistic Lock)을 이용한 동시성 제어**까지 진행했습니다.
 
 ---
 
@@ -29,9 +29,9 @@
 
 * Kafka
 * MySQL 또는 PostgreSQL
-* 동시성 제어
 * Docker
 * 비동기 이벤트 처리
+* 멱등성 처리 및 중복 요청 방지
 
 ---
 
@@ -54,6 +54,7 @@ PayProcess는 단순한 계좌 CRUD 프로젝트가 아니라 실제 송금/결�
 * 예외 처리 구조화
 * 거래 이력 관리
 * 동시성 문제 해결
+* 멱등성 및 중복 요청 방지
 * Kafka 기반 비동기 이벤트 처리
 
 ---
@@ -89,7 +90,9 @@ TransferService
   ↓
 @Transactional
   ↓
-Account 조회
+출금 Account 비관적 락 조회
+  ↓
+입금 Account 조회
   ↓
 출금 계좌 withdraw()
   ↓
@@ -102,7 +105,11 @@ TransferRepository.save()
 Dirty Checking
   ↓
 COMMIT / ROLLBACK
+  ↓
+출금 Account Lock 해제
 ```
+
+출금 계좌 조회 시 `PESSIMISTIC_WRITE` 락을 사용해 같은 계좌에서 동시에 여러 송금 요청이 들어왔을 때 잔액 정합성이 깨지는 문제를 방지합니다.
 
 ---
 
@@ -111,7 +118,7 @@ COMMIT / ROLLBACK
 현재 프로젝트는 기능 단위로 패키지를 구분하고 있습니다.
 
 ```text
-com.payflow.payflow
+com.payflow
 ├── user
 │   ├── User.java
 │   ├── UserController.java
@@ -387,6 +394,8 @@ public void transfer(
 
 정상 완료 시 `COMMIT`, 중간에 예외가 발생하면 `ROLLBACK`되어 일부 작업만 DB에 반영되는 것을 방지합니다.
 
+`@Transactional`은 하나의 송금 작업의 원자성을 보장하지만, 서로 다른 트랜잭션이 같은 계좌를 동시에 조회하고 수정하는 문제까지 자동으로 해결하지는 않습니다. 해당 문제는 별도의 동시성 테스트를 통해 재현하고 비관적 락으로 해결했습니다.
+
 ---
 
 # Dirty Checking
@@ -441,6 +450,181 @@ ROLLBACK
 
 ---
 
+# 동시성 제어
+
+같은 출금 계좌에서 동시에 여러 송금 요청이 발생할 때 잔액 정합성이 유지되는지 검증하기 위해 `TransferConcurrencyTest`를 작성했습니다.
+
+## 동시성 문제 재현
+
+초기 상태:
+
+```text
+출금 계좌: 10,000원
+입금 계좌 1: 0원
+입금 계좌 2: 0원
+```
+
+두 Thread가 같은 출금 계좌에서 동시에 각각 8,000원씩 송금하도록 구성했습니다.
+
+```text
+Thread 1: 출금 계좌 → 입금 계좌 1, 8,000원
+Thread 2: 출금 계좌 → 입금 계좌 2, 8,000원
+```
+
+락이 없는 상태에서는 두 트랜잭션이 모두 출금 계좌의 잔액을 10,000원으로 읽고 각각 송금 가능하다고 판단했습니다.
+
+실제 테스트 결과:
+
+```text
+출금 계좌 잔액: 2,000원
+입금 계좌 1 잔액: 8,000원
+입금 계좌 2 잔액: 8,000원
+
+초기 총액: 10,000원
+최종 총액: 18,000원
+```
+
+출금 계좌는 두 트랜잭션이 각각 `10,000 - 8,000 = 2,000`으로 계산한 값을 저장하면서 한쪽 UPDATE가 다른 UPDATE를 덮어쓰고, 서로 다른 입금 계좌에는 각각 8,000원이 반영되는 **Lost Update 계열의 데이터 정합성 문제**가 발생했습니다.
+
+이를 통해 `@Transactional`만으로는 여러 트랜잭션이 동시에 같은 데이터를 수정하는 문제를 방지할 수 없음을 확인했습니다.
+
+## 동시성 테스트 구성
+
+Java의 동시성 도구를 이용해 실제로 여러 Thread에서 송금을 수행했습니다.
+
+* `ExecutorService`
+* `CountDownLatch`
+* `AtomicInteger`
+
+테스트에서는 다음 조건을 자동 검증합니다.
+
+```text
+성공한 송금 요청 = 1
+실패한 송금 요청 = 1
+출금 계좌 최종 잔액 = 2,000원
+두 입금 계좌의 잔액 합계 = 8,000원
+전체 계좌 잔액 합계 = 10,000원
+```
+
+## 비관적 락 적용
+
+출금 계좌 조회 시 `PESSIMISTIC_WRITE`를 적용한 별도의 Repository 메서드를 사용합니다.
+
+```java
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("select a from Account a where a.id = :id")
+Optional<Account> findByIdWithLock(@Param("id") Long id);
+```
+
+`TransferService`에서는 송금 시 출금 계좌를 다음 방식으로 조회합니다.
+
+```java
+Account fromAccount = accountRepository.findByIdWithLock(fromAccountId)
+        .orElseThrow(() ->
+                new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND)
+        );
+```
+
+실제 Hibernate SQL에서도 다음과 같이 `FOR UPDATE`가 실행되는 것을 확인했습니다.
+
+```sql
+select ...
+from accounts
+where id = ?
+for update
+```
+
+동작 흐름:
+
+```text
+Thread 1
+  ↓
+출금 Account 조회 + Row Lock 획득
+  ↓
+잔액 10,000원 확인
+  ↓
+8,000원 송금
+  ↓
+COMMIT
+  ↓
+Lock 해제
+
+Thread 2
+  ↓
+같은 출금 Account Lock 대기
+  ↓
+Thread 1 COMMIT 이후 조회
+  ↓
+최신 잔액 2,000원 확인
+  ↓
+8,000원 송금 불가
+  ↓
+INSUFFICIENT_BALANCE
+```
+
+비관적 락 적용 후 실제 결과:
+
+```text
+출금 계좌 잔액: 2,000원
+입금 계좌 1 잔액: 8,000원
+입금 계좌 2 잔액: 0원
+```
+
+또는 두 Thread의 실행 순서에 따라 입금 계좌 1과 입금 계좌 2의 결과가 반대로 나타날 수 있습니다.
+
+어느 Thread가 먼저 실행되더라도 다음 불변조건은 유지됩니다.
+
+```text
+성공 요청 = 1
+실패 요청 = 1
+전체 잔액 = 10,000원
+```
+
+## 낙관적 락 비교 실험
+
+비관적 락과의 차이를 확인하기 위해 `Account`에 임시로 `@Version`을 추가해 낙관적 락도 실험했습니다.
+
+```java
+@Version
+private Long version;
+```
+
+낙관적 락에서는 두 Thread가 동시에 같은 잔액과 version을 조회하는 것은 허용됩니다.
+
+대신 UPDATE 시 version이 조건에 포함됩니다.
+
+```sql
+update accounts
+set ..., version = ?
+where id = ?
+  and version = ?
+```
+
+한 트랜잭션이 먼저 UPDATE하여 version을 증가시키면, 다른 트랜잭션이 이전 version으로 UPDATE할 때 수정되는 row가 0건이 되어 충돌이 감지됩니다.
+
+실제 테스트에서는 다음 예외를 확인했습니다.
+
+```text
+org.springframework.orm.ObjectOptimisticLockingFailureException
+```
+
+### 비관적 락과 낙관적 락 비교
+
+| 구분 | 비관적 락 | 낙관적 락 |
+| --- | --- | --- |
+| 핵심 방식 | 조회 시 DB Row Lock 획득 | 수정 시 version 비교 |
+| 대표 SQL | `SELECT ... FOR UPDATE` | `UPDATE ... WHERE version = ?` |
+| 충돌 시 | 다른 트랜잭션이 대기 | 충돌 예외 발생 |
+| 장점 | 충돌이 많은 상황에서 처리 흐름이 명확함 | 충돌이 적을 때 Lock 대기 비용을 줄일 수 있음 |
+| 단점 | Lock 대기 및 성능 저하 가능 | 충돌 시 재시도 정책 필요 |
+| 이번 프로젝트 | **최종 채택** | 비교 실험 |
+
+PayProcess의 송금에서는 같은 출금 계좌에 대한 동시 수정이 발생했을 때 잔액 정합성을 우선 보장하고, 대기 후 최신 잔액을 기준으로 잔액 부족 여부를 다시 판단할 수 있도록 **비관적 락을 최종 방식으로 선택했습니다.**
+
+낙관적 락 실험을 위해 추가했던 `@Version` 필드는 최종 구현에서는 제거합니다.
+
+---
+
 # 송금 Validation
 
 송금 요청 검증은 **API 입력값 검증**과 **비즈니스 규칙 검증**으로 역할을 분리했습니다.
@@ -486,8 +670,6 @@ fromAccountId 누락
 * 존재하지 않는 입금 계좌
 * 잔액 부족
 * 0 이하 금액에 대한 Domain 자체 방어
-
-즉 다음과 같이 역할을 분리합니다.
 
 ```text
 Controller / Request DTO
@@ -758,8 +940,6 @@ createdAt DESC
 
 ---
 
----
-
 ## Day 8 — Validation과 자동 테스트
 
 ### Bean Validation
@@ -818,6 +998,35 @@ DB 계좌 잔액 원복 확인
 
 이를 통해 단순 Java 로직뿐 아니라 실제 Spring Transaction 경계에서도 송금 원자성이 유지되는지 확인했습니다.
 
+---
+
+## Day 9 — 동시성 문제 재현과 비관적 락
+
+### 동시성 문제 재현
+
+* `ExecutorService`
+* `CountDownLatch`
+* `AtomicInteger`
+* 같은 출금 계좌에 대한 동시 송금 테스트
+* Lost Update 계열의 잔액 정합성 문제 재현
+* 락이 없는 상태에서 초기 총액 10,000원이 18,000원으로 증가하는 비정상 상태 확인
+
+### 비관적 락
+
+* `@Lock(LockModeType.PESSIMISTIC_WRITE)`
+* `SELECT ... FOR UPDATE`
+* 같은 출금 계좌에 대한 동시 수정 직렬화
+* 두 요청 중 1건 성공 / 1건 잔액 부족 실패 검증
+* 전체 잔액 10,000원 보존 확인
+
+### 낙관적 락 비교 실험
+
+* `@Version`
+* version 조건이 포함된 UPDATE SQL 확인
+* `ObjectOptimisticLockingFailureException` 발생 확인
+* 비관적 락과 낙관적 락의 동작 방식 비교
+
+최종적으로 PayProcess의 송금 처리에서는 **비관적 락을 채택**했습니다.
 
 ---
 
@@ -871,7 +1080,7 @@ Bean Validation을 이용해 Controller 진입 단계에서 잘못된 요청값�
 
 ### Test
 
-Controller, Service, Transaction 계층을 나누어 자동 테스트를 작성했습니다.
+Controller, Service, Transaction, Concurrency 계층을 나누어 자동 테스트를 작성했습니다.
 
 ```text
 Controller Test
@@ -882,46 +1091,44 @@ Service Test
 
 Transaction Integration Test
 → JPA / H2 / Rollback
+
+Concurrency Test
+→ 동시 송금 / Lost Update / Pessimistic Lock
 ```
+
+### Concurrency Control
+
+`@Transactional`만으로 해결되지 않는 여러 트랜잭션 간 동시 수정 문제를 테스트로 재현했습니다.
+
+출금 계좌 조회 시 `PESSIMISTIC_WRITE`를 적용하여 같은 계좌를 동시에 수정하려는 트랜잭션을 순차적으로 처리하고 잔액 정합성을 유지합니다.
 
 ---
 
 # 앞으로 구현할 기능
 
-## 1. 동시성 문제 재현 및 제어
+## 1. 멱등성 및 중복 송금 방지
 
-다음 단계에서는 같은 계좌에서 동시에 여러 송금 요청이 들어오는 상황을 테스트합니다.
+네트워크 재시도나 사용자의 중복 클릭으로 동일한 송금 요청이 여러 번 전달되어도 실제 송금은 한 번만 처리되도록 멱등성 구조를 학습하고 구현할 예정입니다.
 
-```text
-잔액: 10,000원
+검토 항목:
 
-요청 A: 8,000원 송금
-요청 B: 8,000원 송금
-```
-
-락이 없다면 두 요청이 동시에 같은 잔액을 조회하여 모두 송금 가능하다고 판단하는 동시성 문제가 발생할 수 있습니다.
-
-진행 예정:
-
-* `ExecutorService`
-* `CountDownLatch`
-* 동시 송금 테스트
-* Lost Update / 잔액 정합성 문제 재현
-* Pessimistic Lock
-* Optimistic Lock
-* `@Version`
-* 락 방식별 장단점 비교
+* Idempotency Key
+* 중복 요청 식별
+* 중복 송금 방지
+* 요청 처리 결과 재사용
+* 동시 중복 요청 처리
 
 ## 2. 테스트 코드 확장
 
-현재 Controller / Service / Transaction Rollback 테스트를 작성했습니다.
+현재 Controller / Service / Transaction Rollback / Concurrency 테스트를 작성했습니다.
 
 향후 다음 테스트를 추가할 예정입니다.
 
 * Repository 테스트
-* 동시성 테스트
 * 성공/실패 Transaction 통합 테스트 확대
+* 동시성 테스트 케이스 확대
 * 예외 응답 케이스 확대
+* 멱등성 테스트
 
 ## 3. DTO 구조 확장
 

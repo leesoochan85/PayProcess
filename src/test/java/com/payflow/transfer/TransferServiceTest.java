@@ -46,7 +46,7 @@ class TransferServiceTest {
     void 송금에_성공하면_두_계좌의_잔액이_변경되고_이력이_저장된다() {
 
         // given
-        when(accountRepository.findById(1L))
+        when(accountRepository.findByIdWithLock(1L))
                 .thenReturn(Optional.of(fromAccount));
 
         when(accountRepository.findById(2L))
@@ -75,7 +75,7 @@ class TransferServiceTest {
     void 출금계좌가_존재하지_않으면_예외가_발생한다() {
 
         // given
-        when(accountRepository.findById(1L))
+        when(accountRepository.findByIdWithLock(1L))
                 .thenReturn(Optional.empty());
 
         // when
@@ -95,8 +95,8 @@ class TransferServiceTest {
     void 같은_계좌로는_송금할_수_없다() {
 
         // given
-        when(accountRepository.findById(1L))
-                .thenReturn(Optional.of(fromAccount));
+//        when(accountRepository.findByIdWithLock(1L))
+//                .thenReturn(Optional.of(fromAccount));
 
         // when
         BusinessException exception = catchThrowableOfType(
@@ -117,7 +117,7 @@ class TransferServiceTest {
     void 잔액이_부족하면_송금할_수_없다() {
 
         // given
-        when(accountRepository.findById(1L))
+        when(accountRepository.findByIdWithLock(1L))
                 .thenReturn(Optional.of(fromAccount));
 
         when(accountRepository.findById(2L))

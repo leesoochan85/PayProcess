@@ -22,15 +22,17 @@ public class TransferService {
 
     @Transactional
     public void transfer(Long fromAccountId, Long toAccountId, Long amount){
-        Account fromAccount = accountRepository.findById(fromAccountId).orElseThrow(() ->
+
+        if(fromAccountId.equals(toAccountId)){
+            throw new BusinessException(ErrorCode.SAME_ACCOUNT_TRANSFER);
+        }
+
+        Account fromAccount = accountRepository.findByIdWithLock(fromAccountId).orElseThrow(() ->
                 new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND));
 
         Account toAccount = accountRepository.findById(toAccountId).orElseThrow(() ->
                 new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND));
 
-        if(fromAccountId.equals(toAccountId)){
-            throw new BusinessException(ErrorCode.SAME_ACCOUNT_TRANSFER);
-        }
 
         fromAccount.withdraw(amount);
         toAccount.deposit(amount);
