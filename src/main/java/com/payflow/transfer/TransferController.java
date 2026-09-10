@@ -17,8 +17,10 @@ public class TransferController {
     }
 
     @PostMapping
-    public String transfer(@Valid @RequestBody TransferRequest request) {
-        transferService.transfer(request.fromAccountId(), request.toAccountId(), request.amount());
+    public String transfer(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @Valid @RequestBody TransferRequest request) {
+        transferService.transfer(request.fromAccountId(), request.toAccountId(), request.amount(), idempotencyKey);
         return "송금 성공";
     }
 
@@ -26,14 +28,17 @@ public class TransferController {
     public List<TransferResponse> getTransfers(){
         return transferService.findAll();
     }
+
     @GetMapping("/sent/{accountId}")
     public List<TransferResponse>getTransfers(@PathVariable Long accountId){
         return transferService.findSentTransfers(accountId);
     }
+
     @GetMapping("/received/{accountId}")
     public List<TransferResponse>getReceivedTransfers(@PathVariable Long accountId){
         return transferService.findReceivedTransfers(accountId);
     }
+
     @GetMapping("/accounts/{accountId}")
     public List<AccountTransferResponse>getAll(@PathVariable Long accountId){
         return transferService.findAccountTransfers(accountId);

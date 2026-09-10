@@ -25,6 +25,7 @@ public class TransferControllerTest {
     void 송금금액이_음수이면_400을_반환한다() throws Exception {
 
         mockMvc.perform(post("/api/transfers")
+                        .header("Idempotency-Key", "test-key")
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -43,6 +44,7 @@ public class TransferControllerTest {
     void 송금금액이_없으면_400을_반환한다() throws Exception {
 
         mockMvc.perform(post("/api/transfers")
+                        .header("Idempotency-Key", "test-key")
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -60,6 +62,7 @@ public class TransferControllerTest {
     void 출금계좌ID가_없으면_400을_반환한다() throws Exception {
 
         mockMvc.perform(post("/api/transfers")
+                        .header("Idempotency-Key", "test-key")
                         .contentType(APPLICATION_JSON)
                         .content("""
                                 {
@@ -76,9 +79,11 @@ public class TransferControllerTest {
     @Test
     void 존재하지_않는_계좌면_404를_반환한다() throws Exception{
         doThrow(new BusinessException(ErrorCode.ACCOUNT_NOT_FOUND))
-                .when(transferService).transfer(999L,2L,1000L);
-        mockMvc.perform(post("/api/transfers").contentType(APPLICATION_JSON).
-                content("""
+                .when(transferService).transfer(999L,2L,1000L, "test-key");
+        mockMvc.perform(post("/api/transfers")
+                        .header("Idempotency-Key", "test-key")
+                        .contentType(APPLICATION_JSON)
+                        .content("""
                             {
                               "fromAccountId": 999,
                               "toAccountId": 2,
@@ -96,9 +101,11 @@ public class TransferControllerTest {
     void 같은_계좌로_송금하면_400을_반환한다() throws Exception{
         doThrow(new BusinessException(ErrorCode.SAME_ACCOUNT_TRANSFER))
                 .when(transferService)
-                .transfer(1L,1L,1000L);
+                .transfer(1L,1L,1000L, "test-key");
 
-        mockMvc.perform(post("/api/transfers").contentType(APPLICATION_JSON).
+        mockMvc.perform(post("/api/transfers")
+                .header("Idempotency-Key", "test-key")
+                        .contentType(APPLICATION_JSON).
                         content("""
                             {
                               "fromAccountId": 1,
@@ -117,9 +124,10 @@ public class TransferControllerTest {
 
         doThrow(new BusinessException(ErrorCode.INSUFFICIENT_BALANCE))
                 .when(transferService)
-                .transfer(1L, 2L, 999999L);
+                .transfer(1L, 2L, 999999L, "test-key");
 
         mockMvc.perform(post("/api/transfers")
+                        .header("Idempotency-Key", "test-key")
                         .contentType(APPLICATION_JSON)
                         .content("""
                             {
