@@ -27,7 +27,7 @@ public class TransferService {
     }
 
     @Transactional
-    public void transfer(Long fromAccountId, Long toAccountId, Long amount, String idempotencyKey) {
+    public Long transfer(Long fromAccountId, Long toAccountId, Long amount, String idempotencyKey) {
         if(fromAccountId.equals(toAccountId)){
             throw new BusinessException(ErrorCode.SAME_ACCOUNT_TRANSFER);
         }
@@ -41,7 +41,7 @@ public class TransferService {
             if(!existingKey.isSameRequest(fromAccountId,toAccountId,amount)){
                 throw new BusinessException(ErrorCode.IDEMPOTENCY_KEY_CONFLICT);
             }
-            return;
+            return existingKey.getTransferId();
         }
 
         Account toAccount = accountRepository.findById(toAccountId)
@@ -54,6 +54,8 @@ public class TransferService {
         Transfer savedTransfer = transferRepository.save(transfer);
         IdempotencyKey savedKey = new IdempotencyKey(idempotencyKey, savedTransfer.getId(),fromAccountId,toAccountId,amount);
         idempotencyKeyRepository.save(savedKey);
+
+        return savedTransfer.getId();
     }
 
     @Transactional

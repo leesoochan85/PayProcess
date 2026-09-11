@@ -2,13 +2,18 @@ package com.payflow.transfer;
 
 import com.payflow.exception.BusinessException;
 import com.payflow.exception.ErrorCode;
+import com.payflow.transfer.dto.TransferRequest;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.ObjectMapper;
 
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -20,6 +25,29 @@ public class TransferControllerTest {
 
     @MockitoBean
     TransferService transferService;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Test
+    void 송금_성공시_transferId와_SUCCESS를_반환한다() throws Exception {
+
+        // given
+        TransferRequest request = new TransferRequest(1L,2L,1000L);
+
+        when(transferService.transfer(anyLong(),anyLong(),anyLong(),anyString())).thenReturn(1L);
+
+        // when & then
+        mockMvc.perform(
+                        post("/api/transfers")
+                                .header("Idempotency-Key", "test-key-001")
+                                .contentType("application/json")
+                                .content(objectMapper.writeValueAsString(request))
+                )
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.transferId").value(1L))
+                .andExpect(jsonPath("$.status").value("SUCCESS"));
+    }
 
     @Test
     void 송금금액이_음수이면_400을_반환한다() throws Exception {

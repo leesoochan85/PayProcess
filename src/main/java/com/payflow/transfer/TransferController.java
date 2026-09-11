@@ -1,6 +1,7 @@
 package com.payflow.transfer;
 
 import com.payflow.transfer.dto.AccountTransferResponse;
+import com.payflow.transfer.dto.TransferCreateResponse;
 import com.payflow.transfer.dto.TransferRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.*;
@@ -17,11 +18,11 @@ public class TransferController {
     }
 
     @PostMapping
-    public String transfer(
+    public TransferCreateResponse transfer(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody TransferRequest request) {
-        transferService.transfer(request.fromAccountId(), request.toAccountId(), request.amount(), idempotencyKey);
-        return "송금 성공";
+        Long transferId = transferService.transfer(request.fromAccountId(), request.toAccountId(), request.amount(), idempotencyKey);
+        return new TransferCreateResponse(transferId,"SUCCESS");
     }
 
     @GetMapping

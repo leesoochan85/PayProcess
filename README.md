@@ -17,6 +17,9 @@ Java / Spring Boot 기반의 **송금 시스템 사이드 프로젝트**입니�
 * 비관적 락(Pessimistic Lock)
 * 낙관적 락(Optimistic Lock) 비교 실험
 * Idempotency-Key 기반 중복 송금 방지
+* 동일 멱등성 요청 재시도 시 최초 transferId 반환
+* 송금 성공 응답 DTO
+* MockMvc 기반 송금 응답 검증
 
 ---
 
@@ -161,6 +164,7 @@ com.payflow
 │   ├── TransferResponse.java
 │   └── dto
 │       ├── TransferRequest.java
+│       ├── TransferCreateResponse.java
 │       └── AccountTransferResponse.java
 │
 ├── idempotency
@@ -289,6 +293,19 @@ Idempotency-Key: transfer-001
 1번 계좌: 7,000원
 2번 계좌: 13,000원
 ```
+
+송금이 정상 처리되면 생성된 거래 ID와 처리 결과를 JSON으로 반환합니다.
+
+```json
+{
+  "transferId": 1,
+  "status": "SUCCESS"
+}
+```
+
+기존의 단순 문자열 또는 거래 ID만 반환하는 방식에서 응답 DTO를 사용하도록 개선했습니다.
+
+이를 통해 클라이언트가 생성된 거래를 식별할 수 있고, 향후 거래 상태 관리 기능으로 확장할 수 있는 구조를 마련했습니다.
 
 ---
 
@@ -623,36 +640,70 @@ IdempotencyKey
 
 동일한 멱등성 키와 동일한 송금 요청이 다시 들어오면 실제 송금을 다시 수행하지 않습니다.
 
-```text
-첫 번째 요청
+첫 번째 요청:
 
+```text
 Idempotency-Key: abc-001
+
 2 → 3
 3,000원
 
 ↓
 
 송금 실행
+↓
+
 Transfer 저장
+transferId = 1
+
+↓
+
 IdempotencyKey 저장
+transferId = 1
 ```
 
-같은 요청 재전송:
+응답:
+
+```json
+{
+  "transferId": 1,
+  "status": "SUCCESS"
+}
+```
+
+같은 요청을 다시 전송하면:
 
 ```text
 Idempotency-Key: abc-001
+
 2 → 3
 3,000원
 
 ↓
 
 기존 IdempotencyKey 발견
+
 ↓
 
-송금 생략
+송금 재실행하지 않음
+
+↓
+
+기존 transferId 반환
 ```
 
-따라서 클라이언트가 동일 요청을 여러 번 전송하더라도 실제 송금은 한 번만 처리됩니다.
+응답:
+
+```json
+{
+  "transferId": 1,
+  "status": "SUCCESS"
+}
+```
+
+따라서 동일한 요청을 여러 번 보내더라도 실제 송금은 한 번만 수행되며, 재요청에서도 최초 송금에서 생성된 동일한 `transferId`를 반환합니다.
+
+이를 통해 중복 상태 변경을 방지할 뿐 아니라 재시도 요청에도 일관된 처리 결과를 제공합니다.
 
 ---
 
@@ -805,15 +856,25 @@ Transfer 2건
 ## 동일 Idempotency-Key 순차 요청
 
 ```text
-요청 1 → 송금
-요청 2 → 동일 Key
+요청 1
+→ 송금 실행
+→ transferId = 1
+
+요청 2
+→ 동일 Key + 동일 요청
+→ 송금 실행 생략
+→ 기존 transferId = 1 반환
 
 ↓
 
 잔액 7,000원
 Transfer 1건
 IdempotencyKey 1건
+
+firstTransferId == secondTransferId
 ```
+
+동일 요청이 한 번만 처리되는 것뿐 아니라 최초 요청과 재요청에서 반환되는 `transferId`가 동일한지도 검증합니다.
 
 ## 같은 Key + 다른 요청
 
@@ -883,8 +944,20 @@ JSON
 현재 송금 영역에서는 다음 DTO를 사용합니다.
 
 * `TransferRequest`
+* `TransferCreateResponse`
 * `TransferResponse`
 * `AccountTransferResponse`
+
+송금 성공 시 `TransferCreateResponse`를 통해 다음과 같은 JSON 응답을 반환합니다.
+
+```json
+{
+  "transferId": 1,
+  "status": "SUCCESS"
+}
+```
+
+이를 통해 API가 단순 문자열이나 숫자를 반환하지 않고 명확한 응답 구조를 갖도록 개선했습니다.
 
 Entity 구조와 외부 API 명세를 분리하여 DB 구조 변경이 API에 직접 영향을 주는 것을 줄이는 것을 목표로 합니다.
 
@@ -932,7 +1005,17 @@ Transfer 저장에 실패했을 때 계좌 잔액까지 Rollback되는지 검증
 
 ## TransferControllerTest
 
-MockMvc를 사용하여 HTTP 요청 Validation 및 BusinessException 응답을 검증합니다.
+MockMvc를 사용하여 HTTP 요청과 응답을 검증합니다.
+
+현재 다음 내용을 테스트합니다.
+
+* 요청 Validation
+* BusinessException 응답
+* 송금 성공 시 HTTP 200 응답
+* 응답 JSON의 `transferId`
+* 응답 JSON의 `status = SUCCESS`
+
+Service 로직뿐 아니라 실제 Controller가 반환하는 API 응답 형식까지 자동 테스트로 검증합니다.
 
 ## TransferIdempotencyTest
 
@@ -940,6 +1023,7 @@ Idempotency-Key를 기반으로 다음을 검증합니다.
 
 * 멱등성 미적용 시 중복 송금 발생
 * 동일 키 동일 요청 1회 처리
+* 동일 키 동일 요청 재시도 시 동일 transferId 반환
 * 동일 키 다른 요청 충돌
 * 동일 키 동시 요청 1회 처리
 
@@ -1088,6 +1172,45 @@ IDEMPOTENCY_KEY_CONFLICT
 
 ---
 
+## 6. 멱등성 재요청의 응답 일관성
+
+### 문제
+
+초기 멱등성 구현에서는 동일한 요청이 다시 들어오면 실제 송금은 막았지만 단순히 처리를 종료했습니다.
+
+```text
+첫 요청
+→ 송금 실행
+→ Transfer 생성
+
+재요청
+→ 송금 실행 X
+→ return
+```
+
+이 방식은 중복 송금은 방지하지만 클라이언트가 최초 요청에서 생성된 거래를 다시 식별하기 어렵다는 문제가 있습니다.
+
+### 해결
+
+`IdempotencyKey`에 저장된 `transferId`를 이용하여 동일 요청 재시도 시 최초 거래 ID를 반환하도록 개선했습니다.
+
+```text
+첫 요청
+→ Transfer 생성
+→ transferId = 1
+→ IdempotencyKey에 transferId 저장
+
+재요청
+→ 동일 Key 확인
+→ 요청 내용 비교
+→ 송금 재실행 X
+→ 기존 transferId = 1 반환
+```
+
+이를 통해 동일한 요청에 대해 실제 상태 변경뿐 아니라 반환 결과도 일관되게 유지하도록 개선했습니다.
+
+---
+
 # 학습 진행 상황
 
 ## Day 1 — Spring MVC
@@ -1171,6 +1294,17 @@ IDEMPOTENCY_KEY_CONFLICT
 * Lock 순서 개선
 * 동일 Key 재사용 충돌 검증
 
+## Day 11 — 송금 응답과 멱등성 결과 일관성
+
+* 송금 Service에서 `transferId` 반환
+* 동일 멱등성 요청 재시도 시 기존 `transferId` 반환
+* 최초 요청과 재요청의 `transferId` 동일성 테스트
+* `TransferCreateResponse` DTO 추가
+* 송금 성공 응답 JSON 구조화
+* `transferId`, `status` 응답
+* MockMvc 기반 Controller 응답 테스트
+* 실제 `.http` 요청을 통한 JSON 응답 확인
+
 ---
 
 # 현재까지 배운 핵심
@@ -1213,6 +1347,22 @@ Version 값을 이용해 변경 시점에 동시 수정 여부를 감지합니�
 
 동일한 요청이 반복되더라도 시스템의 실제 상태 변경은 한 번만 발생하도록 합니다.
 
+PayProcess에서는 동일한 `Idempotency-Key`와 동일한 송금 요청이 다시 들어오면 실제 송금을 다시 수행하지 않습니다.
+
+또한 최초 송금에서 생성된 `transferId`를 저장해 두었다가 재요청에서도 동일한 값을 반환합니다.
+
+```text
+첫 요청
+→ 송금 실행
+→ transferId = 1
+
+재요청
+→ 송금 실행 X
+→ transferId = 1 반환
+```
+
+따라서 중복 상태 변경 방지뿐 아니라 재시도 요청에 대한 결과 일관성까지 유지합니다.
+
 ### Database Constraint
 
 Application 코드뿐 아니라 DB의 UNIQUE 제약을 함께 사용해 데이터 무결성을 보호합니다.
@@ -1221,15 +1371,9 @@ Application 코드뿐 아니라 DB의 UNIQUE 제약을 함께 사용해 데이�
 
 # 앞으로 구현할 기능
 
-## 1. 송금 응답 DTO
+## 1. 거래 상태 관리
 
-현재 송금 성공 응답은 단순 문자열입니다.
-
-```text
-송금 성공
-```
-
-향후에는 다음 정보를 포함하는 응답 DTO로 변경할 수 있습니다.
+현재 송금 성공 응답에서는 다음과 같이 처리 결과를 반환합니다.
 
 ```json
 {
@@ -1238,15 +1382,9 @@ Application 코드뿐 아니라 DB의 UNIQUE 제약을 함께 사용해 데이�
 }
 ```
 
-멱등성 재요청에서도 최초 처리와 동일한 결과를 반환할 수 있도록 구조를 개선할 예정입니다.
+현재 `SUCCESS`는 API 응답 단계에서 사용하고 있습니다.
 
----
-
-## 2. 거래 상태 관리
-
-현재 Transfer는 성공한 거래 중심으로 저장합니다.
-
-향후 다음과 같은 상태를 관리할 수 있습니다.
+다음 단계에서는 `Transfer` 자체가 거래 상태를 관리하도록 확장할 예정입니다.
 
 ```text
 PENDING
@@ -1254,9 +1392,11 @@ SUCCESS
 FAILED
 ```
 
+이를 통해 송금의 처리 상태를 Database에 저장하고 거래 상태 변화를 관리할 수 있는 구조로 발전시킬 예정입니다.
+
 ---
 
-## 3. 거래 조회 고도화
+## 2. 거래 조회 고도화
 
 * Pagination
 * 기간별 거래내역 조회
@@ -1265,7 +1405,7 @@ FAILED
 
 ---
 
-## 4. Database 전환
+## 3. Database 전환
 
 현재 H2 기반 구조를 MySQL 또는 PostgreSQL 환경으로 이전하여 실제 DB 환경에서 다음 내용을 다시 검증할 예정입니다.
 
@@ -1277,7 +1417,7 @@ FAILED
 
 ---
 
-## 5. Kafka 비동기 처리
+## 4. Kafka 비동기 처리
 
 송금 Transaction과 직접 관련이 없는 후속 처리를 이벤트 기반으로 분리할 예정입니다.
 
@@ -1298,7 +1438,7 @@ Kafka
 
 ---
 
-## 6. Docker
+## 5. Docker
 
 Application과 Database 실행 환경을 Container 기반으로 구성할 예정입니다.
 
