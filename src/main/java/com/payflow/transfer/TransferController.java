@@ -3,10 +3,10 @@ package com.payflow.transfer;
 import com.payflow.transfer.dto.AccountTransferResponse;
 import com.payflow.transfer.dto.TransferCreateResponse;
 import com.payflow.transfer.dto.TransferRequest;
+import com.payflow.transfer.dto.TransferResponse;
 import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
 
 @RestController
 @RequestMapping("/api/transfers")
@@ -22,27 +22,40 @@ public class TransferController {
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @Valid @RequestBody TransferRequest request) {
         Long transferId = transferService.transfer(request.fromAccountId(), request.toAccountId(), request.amount(), idempotencyKey);
-        return new TransferCreateResponse(transferId,"SUCCESS");
+        return new TransferCreateResponse(transferId,TransferStatus.SUCCESS);
     }
 
     @GetMapping
-    public List<TransferResponse> getTransfers(){
-        return transferService.findAll();
+    public Page<TransferResponse> getTransfers(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size){
+        return transferService.findAll(page,size);
+    }
+
+    @GetMapping("/{transferId}")
+    public TransferResponse getTransfer(@PathVariable Long transferId) {
+        return transferService.findById(transferId);
     }
 
     @GetMapping("/sent/{accountId}")
-    public List<TransferResponse>getTransfers(@PathVariable Long accountId){
-        return transferService.findSentTransfers(accountId);
+    public Page<TransferResponse>getSentTransfers(@PathVariable Long accountId,
+                                              @RequestParam(defaultValue = "0") int page,
+                                              @RequestParam(defaultValue = "20") int size){
+        return transferService.findSentTransfers(accountId, page, size);
     }
 
     @GetMapping("/received/{accountId}")
-    public List<TransferResponse>getReceivedTransfers(@PathVariable Long accountId){
-        return transferService.findReceivedTransfers(accountId);
+    public Page<TransferResponse>getReceivedTransfers(
+            @PathVariable Long accountId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size){
+        return transferService.findReceivedTransfers(accountId,page,size);
     }
 
     @GetMapping("/accounts/{accountId}")
-    public List<AccountTransferResponse>getAll(@PathVariable Long accountId){
-        return transferService.findAccountTransfers(accountId);
+    public Page<AccountTransferResponse>getAccountTransfers(@PathVariable Long accountId,
+                                               @RequestParam(defaultValue = "0") int page,
+                                               @RequestParam(defaultValue = "20") int size){
+        return transferService.findAccountTransfers(accountId,page,size);
     }
-
 }

@@ -1,4 +1,6 @@
 package com.payflow.transfer.dto;
 
-public record TransferCreateResponse(Long transferId, String status) {
+import com.payflow.transfer.TransferStatus;
+
+public record TransferCreateResponse(Long transferId, TransferStatus status) {
 }

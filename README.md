@@ -19,7 +19,11 @@ Java / Spring Boot 기반의 **송금 시스템 사이드 프로젝트**입니�
 * Idempotency-Key 기반 중복 송금 방지
 * 동일 멱등성 요청 재시도 시 최초 transferId 반환
 * 송금 성공 응답 DTO
-* MockMvc 기반 송금 응답 검증
+* 거래 상태 관리 (`PENDING`, `SUCCESS`, `FAILED`)
+* 거래 ID 기반 단건 조회
+* 전체 / 송신 / 수신 / 계좌별 거래내역 Pagination
+* `createdAt DESC` 최신순 정렬
+* MockMvc 기반 송금 및 거래 조회 응답 검증
 
 ---
 
@@ -53,11 +57,12 @@ Java / Spring Boot 기반의 **송금 시스템 사이드 프로젝트**입니�
 
 ## 향후 추가 예정
 
-* MySQL 또는 PostgreSQL
+* PostgreSQL 또는 MySQL
 * Kafka
 * Docker
-* Pagination
-* 거래 상태 관리
+* 기간별 거래내역 조회
+* 거래 상태별 조회
+* 조건 검색
 * 비동기 이벤트 처리
 
 ---
@@ -161,9 +166,11 @@ com.payflow
 │   ├── TransferController.java
 │   ├── TransferService.java
 │   ├── TransferRepository.java
-│   ├── TransferResponse.java
+│   ├── TransferStatus.java
+│   ├── TransferType.java
 │   └── dto
 │       ├── TransferRequest.java
+│       ├── TransferResponse.java
 │       ├── TransferCreateResponse.java
 │       └── AccountTransferResponse.java
 │
@@ -320,6 +327,14 @@ Idempotency-Key: transfer-001
   ↓
 입금
   ↓
+Transfer 생성
+  ↓
+PENDING
+  ↓
+송금 정상 처리
+  ↓
+SUCCESS
+  ↓
 Transfer 저장
   ↓
 COMMIT
@@ -333,39 +348,78 @@ Transfer
 ├── fromAccountId
 ├── toAccountId
 ├── amount
+├── status
 └── createdAt
+```
+
+거래 상태는 문자열을 직접 사용하지 않고 `TransferStatus` Enum으로 관리합니다.
+
+```java
+public enum TransferStatus {
+    PENDING,
+    SUCCESS,
+    FAILED
+}
+```
+
+새로운 Transfer는 기본적으로 `PENDING` 상태로 생성되며 정상적으로 송금 처리가 완료되면 `SUCCESS`로 변경합니다.
+
+```java
+Transfer transfer = new Transfer(fromAccountId, toAccountId, amount);
+transfer.success();
+```
+
+Enum 값은 문자열 형태로 저장합니다.
+
+```java
+@Enumerated(EnumType.STRING)
+private TransferStatus status;
 ```
 
 잔액 변경과 Transfer 저장은 하나의 Transaction 안에서 처리됩니다.
 
-따라서 Transfer 저장 과정에서 예외가 발생하면 계좌 잔액 변경 역시 Rollback됩니다.
+따라서 처리 중 예외가 발생하면 계좌 잔액 변경과 Transfer 저장이 함께 Rollback됩니다.
+
+현재 동기식 송금 구조에서는 실패 시 Transaction 전체가 Rollback되므로 `FAILED` Transfer를 별도로 저장하지 않습니다. 향후 비동기 처리 구조에서 `PENDING → SUCCESS / FAILED` 상태 전이를 확장할 예정입니다.
 
 ---
 
 # 7. 거래내역 조회
 
+거래내역 목록 조회에는 Spring Data JPA의 `Page`, `Pageable`, `PageRequest`를 사용하여 Pagination을 적용했습니다.
+
+모든 목록 조회는 기본적으로 다음 정책을 사용합니다.
+
+```text
+page = 0
+size = 20
+sort = createdAt DESC
+```
+
+따라서 가장 최근 거래부터 조회합니다.
+
 ## 전체 송금 이력
 
 ```text
-GET /api/transfers
+GET /api/transfers?page=0&size=20
 ```
 
 ## 보낸 송금 이력
 
 ```text
-GET /api/transfers/sent/{accountId}
+GET /api/transfers/sent/{accountId}?page=0&size=20
 ```
 
 ## 받은 송금 이력
 
 ```text
-GET /api/transfers/received/{accountId}
+GET /api/transfers/received/{accountId}?page=0&size=20
 ```
 
 ## 특정 계좌 전체 거래내역
 
 ```text
-GET /api/transfers/accounts/{accountId}
+GET /api/transfers/accounts/{accountId}?page=0&size=20
 ```
 
 특정 계좌 관점에서는 같은 Transfer도 `SENT` 또는 `RECEIVED`로 구분합니다.
@@ -403,6 +457,94 @@ GET /api/transfers/accounts/{accountId}
 public enum TransferType {
     SENT,
     RECEIVED
+}
+```
+
+Pagination 응답에는 `content`와 페이지 정보가 함께 포함됩니다.
+
+```json
+{
+  "content": [
+    {
+      "id": 3,
+      "fromAccountId": 1,
+      "toAccountId": 2,
+      "amount": 1000,
+      "status": "SUCCESS",
+      "createdAt": "2026-09-12T19:13:14.220716"
+    }
+  ],
+  "number": 0,
+  "numberOfElements": 1,
+  "size": 2,
+  "totalElements": 1,
+  "totalPages": 1,
+  "first": true,
+  "last": true
+}
+```
+
+Service에서는 반복되는 Pagination 생성 코드를 공통 메서드로 분리했습니다.
+
+```java
+private Pageable createPageable(int page, int size) {
+    return PageRequest.of(
+            page,
+            size,
+            Sort.by(Sort.Direction.DESC, "createdAt")
+    );
+}
+```
+
+이를 통해 전체 / 송신 / 수신 / 계좌별 거래 조회가 동일한 Pagination 및 정렬 정책을 사용합니다.
+
+---
+
+# 8. 거래 단건 조회
+
+송금 API에서 반환된 `transferId`로 특정 거래를 조회할 수 있습니다.
+
+```text
+GET /api/transfers/{transferId}
+```
+
+예:
+
+```text
+GET /api/transfers/1
+```
+
+응답:
+
+```json
+{
+  "id": 1,
+  "fromAccountId": 1,
+  "toAccountId": 2,
+  "amount": 3000,
+  "status": "SUCCESS",
+  "createdAt": "2026-09-12T16:00:00"
+}
+```
+
+송금 생성부터 거래 확인까지 다음 흐름으로 사용할 수 있습니다.
+
+```text
+POST /api/transfers
+        ↓
+transferId 발급
+        ↓
+GET /api/transfers/{transferId}
+        ↓
+거래 정보 및 상태 확인
+```
+
+존재하지 않는 거래를 조회하면 `404 Not Found`와 `TRANSFER_NOT_FOUND`를 반환합니다.
+
+```json
+{
+  "code": "TRANSFER_NOT_FOUND",
+  "message": "거래가 존재하지 않습니다."
 }
 ```
 
@@ -482,6 +624,7 @@ ErrorResponse
 | `INSUFFICIENT_BALANCE`     |         400 | 잔액 부족               |
 | `SAME_ACCOUNT_TRANSFER`    |         400 | 동일 계좌 송금            |
 | `ACCOUNT_NOT_FOUND`        |         404 | 존재하지 않는 계좌          |
+| `TRANSFER_NOT_FOUND`       |         404 | 존재하지 않는 거래          |
 | `INVALID_REQUEST`          |         400 | 요청 Validation 실패    |
 | `IDEMPOTENCY_KEY_CONFLICT` |         400 | 동일 멱등성 키를 다른 요청에 사용 |
 
@@ -967,19 +1110,27 @@ Entity 구조와 외부 API 명세를 분리하여 DB 구조 변경이 API에 �
 
 현재 구현한 주요 API입니다.
 
-| Method | Endpoint                              | 기능            |
-| ------ | ------------------------------------- | ------------- |
-| POST   | `/api/users`                          | 사용자 생성        |
-| POST   | `/api/accounts`                       | 계좌 생성         |
-| GET    | `/api/accounts`                       | 계좌 목록 조회      |
-| POST   | `/api/accounts/{accountId}/deposit`   | 계좌 입금         |
-| POST   | `/api/transfers`                      | 계좌 간 송금       |
-| GET    | `/api/transfers`                      | 전체 송금 이력 조회   |
-| GET    | `/api/transfers/sent/{accountId}`     | 보낸 송금 조회      |
-| GET    | `/api/transfers/received/{accountId}` | 받은 송금 조회      |
-| GET    | `/api/transfers/accounts/{accountId}` | 특정 계좌 전체 거래내역 |
+| Method | Endpoint | 기능 |
+| ------ | -------- | ---- |
+| POST | `/api/users` | 사용자 생성 |
+| POST | `/api/accounts` | 계좌 생성 |
+| GET | `/api/accounts` | 계좌 목록 조회 |
+| POST | `/api/accounts/{accountId}/deposit` | 계좌 입금 |
+| POST | `/api/transfers` | 계좌 간 송금 |
+| GET | `/api/transfers?page={page}&size={size}` | 전체 거래내역 Pagination 조회 |
+| GET | `/api/transfers/{transferId}` | 거래 단건 조회 |
+| GET | `/api/transfers/sent/{accountId}?page={page}&size={size}` | 보낸 거래내역 Pagination 조회 |
+| GET | `/api/transfers/received/{accountId}?page={page}&size={size}` | 받은 거래내역 Pagination 조회 |
+| GET | `/api/transfers/accounts/{accountId}?page={page}&size={size}` | 특정 계좌 전체 거래내역 Pagination 조회 |
 
 송금 POST 요청에는 `Idempotency-Key` Header가 필요합니다.
+
+Pagination 파라미터를 생략하면 기본값은 다음과 같습니다.
+
+```text
+page = 0
+size = 20
+```
 
 API 테스트는 IntelliJ `.http` 파일을 사용합니다.
 
@@ -994,6 +1145,20 @@ API 테스트는 IntelliJ `.http` 파일을 사용합니다.
 Mockito 기반 Service 단위 테스트입니다.
 
 주요 비즈니스 로직과 Repository 호출을 검증합니다.
+
+현재 다음 내용을 포함합니다.
+
+* 정상 송금 시 잔액 변경 및 이력 저장
+* 존재하지 않는 계좌
+* 동일 계좌 송금 방지
+* 잔액 부족
+* 송금 성공 시 `TransferStatus.SUCCESS` 저장
+* 거래 ID 단건 조회
+* 존재하지 않는 거래 조회
+* 전체 거래내역 Pagination
+* 보낸 거래내역 Pagination
+* 받은 거래내역 Pagination
+* 계좌 기준 거래내역 Pagination
 
 ## TransferTransactionTest
 
@@ -1014,6 +1179,10 @@ MockMvc를 사용하여 HTTP 요청과 응답을 검증합니다.
 * 송금 성공 시 HTTP 200 응답
 * 응답 JSON의 `transferId`
 * 응답 JSON의 `status = SUCCESS`
+* 거래 단건 조회 `200 OK`
+* 존재하지 않는 거래 조회 `404 Not Found`
+* `TRANSFER_NOT_FOUND`
+* 전체 거래내역 Pagination 응답
 
 Service 로직뿐 아니라 실제 Controller가 반환하는 API 응답 형식까지 자동 테스트로 검증합니다.
 
@@ -1211,6 +1380,54 @@ IDEMPOTENCY_KEY_CONFLICT
 
 ---
 
+## 7. 거래 조회 Pagination 적용
+
+### 문제
+
+전체 거래내역을 `List`로 한 번에 조회하면 거래 데이터가 증가할수록 응답 크기와 조회 비용이 커질 수 있습니다.
+
+### 해결
+
+Spring Data JPA의 `Pageable`을 적용했습니다.
+
+```text
+GET /api/transfers?page=0&size=20
+```
+
+전체 / 송신 / 수신 / 계좌별 거래내역 모두 동일한 Pagination 정책을 사용하고 `createdAt DESC`로 최신 거래부터 조회합니다.
+
+반복되는 `PageRequest` 생성 코드는 `createPageable()` 메서드로 분리하여 조회 정책을 한 곳에서 관리하도록 리팩토링했습니다.
+
+---
+
+## 8. 거래 ID 기반 상태 조회
+
+### 문제
+
+송금 성공 응답에서 `transferId`를 반환해도 해당 거래의 상태와 상세 정보를 다시 조회할 API가 없었습니다.
+
+### 해결
+
+다음 단건 조회 API를 추가했습니다.
+
+```text
+GET /api/transfers/{transferId}
+```
+
+존재하지 않는 거래는 `TRANSFER_NOT_FOUND`로 처리합니다.
+
+```text
+POST /api/transfers
+  ↓
+transferId 반환
+  ↓
+GET /api/transfers/{transferId}
+  ↓
+거래 상태 및 상세 정보 확인
+```
+
+---
+
 # 학습 진행 상황
 
 ## Day 1 — Spring MVC
@@ -1305,6 +1522,37 @@ IDEMPOTENCY_KEY_CONFLICT
 * MockMvc 기반 Controller 응답 테스트
 * 실제 `.http` 요청을 통한 JSON 응답 확인
 
+## Day 12 — 거래 상태 관리와 거래 단건 조회
+
+* `TransferStatus` Enum 추가
+* `PENDING`, `SUCCESS`, `FAILED`
+* Transfer Entity에 `status` 저장
+* `EnumType.STRING` 적용
+* 송금 성공 시 `SUCCESS` 상태 변경
+* 거래 상태 저장 단위 테스트
+* `GET /api/transfers/{transferId}`
+* `TRANSFER_NOT_FOUND`
+* 거래 단건 조회 Service 테스트
+* 거래 단건 조회 MockMvc 테스트
+
+## Day 13 — 거래내역 Pagination과 조회 리팩토링
+
+* Spring Data `Page`
+* `Pageable`
+* `PageRequest`
+* 최신 거래순 `createdAt DESC`
+* 전체 거래내역 Pagination
+* 보낸 거래내역 Pagination
+* 받은 거래내역 Pagination
+* 계좌별 전체 거래내역 Pagination
+* 실제 `.http` 요청을 통한 페이지 응답 검증
+* Pagination Service 테스트
+* Pagination Controller 테스트
+* 공통 `createPageable()` 메서드 추출
+* Repository 불필요 import 정리
+* 조회 메서드 이름 정리
+* 전체 회귀 테스트 통과
+
 ---
 
 # 현재까지 배운 핵심
@@ -1367,57 +1615,70 @@ PayProcess에서는 동일한 `Idempotency-Key`와 동일한 송금 요청이 �
 
 Application 코드뿐 아니라 DB의 UNIQUE 제약을 함께 사용해 데이터 무결성을 보호합니다.
 
+### 거래 상태 관리
+
+Transfer는 생성 시 `PENDING` 상태를 가지며 송금 처리가 정상 완료되면 `SUCCESS`로 변경됩니다.
+
+```text
+PENDING
+  ↓
+SUCCESS
+```
+
+`FAILED`는 향후 비동기 처리 구조에서 상태 전이에 활용할 예정입니다.
+
+### Pagination
+
+대량의 거래내역을 한 번에 조회하지 않고 `Pageable`을 사용해 페이지 단위로 조회합니다.
+
+```text
+page = 0
+size = 20
+sort = createdAt DESC
+```
+
+전체 / 송신 / 수신 / 계좌별 조회가 동일한 정책을 사용합니다.
+
 ---
 
 # 앞으로 구현할 기능
 
-## 1. 거래 상태 관리
+## 1. 거래 조회 추가 고도화
 
-현재 송금 성공 응답에서는 다음과 같이 처리 결과를 반환합니다.
+현재 구현:
 
-```json
-{
-  "transferId": 1,
-  "status": "SUCCESS"
-}
-```
+* 거래 ID 단건 조회
+* 전체 거래 Pagination
+* 보낸 거래 Pagination
+* 받은 거래 Pagination
+* 계좌별 거래 Pagination
+* 최신 거래순 정렬
 
-현재 `SUCCESS`는 API 응답 단계에서 사용하고 있습니다.
+추가 예정:
 
-다음 단계에서는 `Transfer` 자체가 거래 상태를 관리하도록 확장할 예정입니다.
-
-```text
-PENDING
-SUCCESS
-FAILED
-```
-
-이를 통해 송금의 처리 상태를 Database에 저장하고 거래 상태 변화를 관리할 수 있는 구조로 발전시킬 예정입니다.
-
----
-
-## 2. 거래 조회 고도화
-
-* Pagination
 * 기간별 거래내역 조회
-* 거래 상세 조회
+* 거래 상태별 조회
 * 조건 검색
 
 ---
 
-## 3. Database 전환
+## 2. Database 전환
 
-현재 H2 기반 구조를 MySQL 또는 PostgreSQL 환경으로 이전하여 실제 DB 환경에서 다음 내용을 다시 검증할 예정입니다.
+현재 H2 In-Memory Database를 사용하고 있습니다.
+
+다음 단계에서는 PostgreSQL 또는 MySQL로 전환하여 실제 DB 환경에서 다음 내용을 다시 검증할 예정입니다.
 
 * Transaction
-* Lock
+* Pessimistic Lock
 * Isolation Level
 * 동시성
-* Constraint
+* UNIQUE Constraint
+* Pagination
+* Index
 
 ---
 
-## 4. Kafka 비동기 처리
+## 3. Kafka 비동기 처리
 
 송금 Transaction과 직접 관련이 없는 후속 처리를 이벤트 기반으로 분리할 예정입니다.
 
@@ -1434,11 +1695,11 @@ Kafka
    └── 기타 후속 작업
 ```
 
-핵심 송금 Transaction과 부가 기능을 분리하여 서비스 확장 구조를 학습하는 것을 목표로 합니다.
+현재 구현한 `TransferStatus`를 기반으로 향후 비동기 처리 과정의 상태 관리도 확장할 예정입니다.
 
 ---
 
-## 5. Docker
+## 4. Docker
 
 Application과 Database 실행 환경을 Container 기반으로 구성할 예정입니다.
 

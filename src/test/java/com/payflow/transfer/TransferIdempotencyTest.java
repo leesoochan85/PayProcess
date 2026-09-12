@@ -62,7 +62,6 @@ public class TransferIdempotencyTest {
         toAccountId = toAccount.getId();
     }
 
-
     @Test
     void 동일한_송금_요청을_두번_보내면_현재는_두번_처리된다(){
         //given
@@ -96,7 +95,6 @@ public class TransferIdempotencyTest {
         assertThat(transferRepository.count()).isEqualTo(1);
         assertThat(idempotencyKeyRepository.count()).isEqualTo(1);
     }
-
 
     @Test
     void 같은_멱등성_키로_다른_송금_요청을_보내면_예외가_발생한다() {

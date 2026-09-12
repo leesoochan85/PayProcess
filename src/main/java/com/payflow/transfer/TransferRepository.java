@@ -1,14 +1,14 @@
 package com.payflow.transfer;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
-
-import java.util.List;
 
 public interface TransferRepository extends JpaRepository<Transfer, Long> {
 
-    List<Transfer> findByFromAccountId(Long fromAccountId);
+    Page<Transfer> findByFromAccountId(Long fromAccountId, Pageable pageable);
 
-    List<Transfer> findByToAccountId(Long toAccountId);
+    Page<Transfer> findByToAccountId(Long toAccountId, Pageable pageable);
 
-    List<Transfer> findByFromAccountIdOrToAccountIdOrderByCreatedAtDesc(Long fromAccountId, Long toAccountId);
+    Page<Transfer> findByFromAccountIdOrToAccountId(Long fromAccountId,Long toAccountId, Pageable pageable);
 }

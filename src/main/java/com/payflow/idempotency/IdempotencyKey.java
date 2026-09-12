@@ -33,7 +33,7 @@ public class IdempotencyKey {
     private Long amount;
 
     @Column(nullable = false)
-    private LocalDateTime createAt;
+    private LocalDateTime createdAt;
 
     protected IdempotencyKey(){
     }
@@ -45,7 +45,7 @@ public class IdempotencyKey {
         this.fromAccountId = fromAccountId;
         this.toAccountId = toAccountId;
         this.amount = amount;
-        this.createAt = LocalDateTime.now();
+        this.createdAt = LocalDateTime.now();
     }
 
     public Long getId() {
@@ -72,8 +72,8 @@ public class IdempotencyKey {
         return amount;
     }
 
-    public LocalDateTime getCreateAt() {
-        return createAt;
+    public LocalDateTime getCreatedAt() {
+        return createdAt;
     }
 
     public boolean isSameRequest(Long fromAccountId, Long toAccountId, Long amount){

@@ -7,10 +7,13 @@ import com.payflow.exception.ErrorCode;
 import com.payflow.idempotency.IdempotencyKey;
 import com.payflow.idempotency.IdempotencyKeyRepository;
 import com.payflow.transfer.dto.AccountTransferResponse;
+import com.payflow.transfer.dto.TransferResponse;
 import jakarta.transaction.Transactional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
-
-import java.util.List;
 
 @Service
 public class TransferService {
@@ -51,6 +54,7 @@ public class TransferService {
         toAccount.deposit(amount);
 
         Transfer transfer = new Transfer(fromAccountId, toAccountId, amount);
+        transfer.success();
         Transfer savedTransfer = transferRepository.save(transfer);
         IdempotencyKey savedKey = new IdempotencyKey(idempotencyKey, savedTransfer.getId(),fromAccountId,toAccountId,amount);
         idempotencyKeyRepository.save(savedKey);
@@ -76,27 +80,34 @@ public class TransferService {
         toAccount.deposit(amount);
 
         Transfer transfer = new Transfer(fromAccountId, toAccountId, amount);
+        transfer.success();
         transferRepository.save(transfer);
     }
 
-
-    public List<TransferResponse> findAll(){
-        return transferRepository.findAll().stream().map(TransferResponse::from).toList();
+    public Page<TransferResponse> findAll(int page, int size){
+        return transferRepository.findAll(createPageable(page,size)).map(TransferResponse::from);
     }
 
-    public List<TransferResponse> findSentTransfers(Long accountId){
-        return transferRepository.findByFromAccountId(accountId).stream().map(TransferResponse::from).toList();
+    public Page<TransferResponse> findSentTransfers(Long accountId, int page, int size){
+        return transferRepository.findByFromAccountId(accountId,createPageable(page,size)).map(TransferResponse::from);
     }
 
-    public List<TransferResponse>findReceivedTransfers(Long accountId){
-        return transferRepository.findByToAccountId(accountId).stream().map(TransferResponse::from).toList();
+    public Page<TransferResponse> findReceivedTransfers(Long accountId, int page, int size){
+        return transferRepository.findByToAccountId(accountId,createPageable(page,size)).map(TransferResponse::from);
     }
 
-    public List<AccountTransferResponse> findAccountTransfers(Long accountId) {
-        return transferRepository.
-                findByFromAccountIdOrToAccountIdOrderByCreatedAtDesc(accountId, accountId)
-                .stream().map(transfer -> AccountTransferResponse.from(
-                        transfer,
-                        accountId)).toList();
+    public Page<AccountTransferResponse> findAccountTransfers(Long accountId, int page, int size) {
+        return transferRepository.findByFromAccountIdOrToAccountId(accountId, accountId,
+                createPageable(page,size)).map(transfer->AccountTransferResponse.from(transfer,accountId));
+    }
+
+    public TransferResponse findById(Long transferId){
+        Transfer transfer = transferRepository.findById(transferId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.TRANSFER_NOT_FOUND));
+        return TransferResponse.from(transfer);
+    }
+
+    private Pageable createPageable(int page, int size){
+        return PageRequest.of(page, size, Sort.by(Sort.Direction.DESC,"createdAt"));
     }
 }
